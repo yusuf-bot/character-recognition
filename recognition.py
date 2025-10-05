@@ -2,102 +2,119 @@ import numpy as np
 import pygame
 import sys
 import tensorflow as tf
-import time
+import cv2
 
-# Check command-line arguments
+# ======================
+# Load Model
+# ======================
+model = tf.keras.models.load_model('best_emnist.keras')
+print(model.input_shape, model.output_shape)
 
-model = tf.keras.models.load_model('brad.keras')
+# ======================
+# Label Mapping
+# ======================
+let = {}
+# Digits
+for i in range(10):
+    let[i] = str(i)
+# Uppercase A–Z
+for i, ch in enumerate(range(ord('A'), ord('Z') + 1), start=10):
+    let[i] = chr(ch)
+# Lowercase a–z
+for i, ch in enumerate(range(ord('a'), ord('z') + 1), start=36):
+    let[i] = chr(ch)
 
-print(model.input_shape)
-print(model.output_shape)
-
-let={10:'A',
-     11:'B',
-     12:'C',
-     13:'D',
-     14:'E',
-     15:'F',
-     16:'G',
-     17:'H',
-     18:'I',
-     19:'J',
-     20:'K',
-     21:'L',
-     22:'M',
-     23:'N',
-     24:'O',
-     25:'P',
-     26:'Q',
-     27:'R',
-     28:'S',
-     29:'T',
-     30:'U',
-     31:'V',
-     32:'W',
-     33:'X',
-     34:'Y',
-     35:'Z',
-     }
-# Colors
+# ======================
+# Pygame Setup
+# ======================
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 
-# Start pygame
 pygame.init()
-size = width, height = 600, 400
+size = width, height = 600, 500
 screen = pygame.display.set_mode(size)
 
-# Fonts
 OPEN_SANS = "assets/fonts/OpenSans-Regular.ttf"
 smallFont = pygame.font.Font(OPEN_SANS, 20)
-largeFont = pygame.font.Font(OPEN_SANS, 40)
+largeFont = pygame.font.Font(OPEN_SANS, 60)
 
 ROWS, COLS = 20, 16
-
 OFFSET = 20
-CELL_SIZE = 15
+CELL_SIZE = 20
 
 handwriting = [[0] * COLS for _ in range(ROWS)]
 classification = None
 
-while True:
 
-    # Check if game quit
+# ======================
+# Preprocessing Function
+# ======================
+def preprocess_canvas(handwriting):
+    img = np.array(handwriting, dtype=np.float32)
+
+    # Invert (pygame draws black on white, EMNIST is white on black)
+    img = 1.0 - img
+
+    # Resize proportionally with padding to 28x28
+    h, w = img.shape
+    scale = min(28 / h, 28 / w)
+    resized = cv2.resize(img, (int(w * scale), int(h * scale)))
+
+    pad_h = (28 - resized.shape[0]) // 2
+    pad_w = (28 - resized.shape[1]) // 2
+    img_padded = np.pad(
+        resized,
+        ((pad_h, 28 - resized.shape[0] - pad_h),
+         (pad_w, 28 - resized.shape[1] - pad_w)),
+        mode="constant", constant_values=0
+    )
+
+    # Center mass (like MNIST preprocessing)
+    cy, cx = np.argwhere(img_padded > 0).mean(axis=0) if np.any(img_padded > 0) else (14, 14)
+    shiftx = int(np.round(14 - cx))
+    shifty = int(np.round(14 - cy))
+    M = np.float32([[1, 0, shiftx], [0, 1, shifty]])
+    img_centered = cv2.warpAffine(img_padded, M, (28, 28))
+
+    # Final preprocessing
+    img_final = img_centered[..., np.newaxis]
+    img_final = img_final / 1.0  # already in [0,1]
+
+    return np.expand_dims(img_final, axis=0)  # shape (1,28,28,1)
+
+
+# ======================
+# Main Loop
+# ======================
+while True:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             sys.exit()
 
     screen.fill(BLACK)
 
-    # Check for mouse press
+    # Mouse input
     click, _, _ = pygame.mouse.get_pressed()
     if click == 1:
         mouse = pygame.mouse.get_pos()
     else:
         mouse = None
 
-    # Draw each grid cell
-    cells = []
+    # Draw grid
     for i in range(ROWS):
-        row = []
         for j in range(COLS):
             rect = pygame.Rect(
                 OFFSET + j * CELL_SIZE,
                 OFFSET + i * CELL_SIZE,
                 CELL_SIZE, CELL_SIZE
             )
-
-            # If cell has been written on, darken cell
             if handwriting[i][j]:
-                channel = 255 - (handwriting[i][j] * 255)
+                channel = 255 - int(handwriting[i][j] * 255)
                 pygame.draw.rect(screen, (channel, channel, channel), rect)
-
-            # Draw blank cell
             else:
                 pygame.draw.rect(screen, WHITE, rect)
             pygame.draw.rect(screen, BLACK, rect, 1)
 
-            # If writing on this cell, fill in current cell and neighbors
             if mouse and rect.collidepoint(mouse):
                 handwriting[i][j] = 250 / 255
                 if i + 1 < ROWS:
@@ -107,52 +124,38 @@ while True:
                 if i + 1 < ROWS and j + 1 < COLS:
                     handwriting[i + 1][j + 1] = 190 / 255
 
-    # Reset button
-    resetButton = pygame.Rect(
-        30, OFFSET + ROWS * CELL_SIZE + 30,
-        100, 30
-    )
-    resetText = smallFont.render("Reset", True, BLACK)
-    resetTextRect = resetText.get_rect()
-    resetTextRect.center = resetButton.center
+    # Buttons
+    resetButton = pygame.Rect(30, OFFSET + ROWS * CELL_SIZE + 30, 100, 40)
+    classifyButton = pygame.Rect(150, OFFSET + ROWS * CELL_SIZE + 30, 120, 40)
+
     pygame.draw.rect(screen, WHITE, resetButton)
-    screen.blit(resetText, resetTextRect)
-
-    # Classify button
-    classifyButton = pygame.Rect(
-        150, OFFSET + ROWS * CELL_SIZE + 30,
-        100, 30
-    )
-    classifyText = smallFont.render("Classify", True, BLACK)
-    classifyTextRect = classifyText.get_rect()
-    classifyTextRect.center = classifyButton.center
     pygame.draw.rect(screen, WHITE, classifyButton)
-    screen.blit(classifyText, classifyTextRect)
 
-    # Reset drawing
+    resetText = smallFont.render("Reset", True, BLACK)
+    classifyText = smallFont.render("Classify", True, BLACK)
+
+    screen.blit(resetText, resetText.get_rect(center=resetButton.center))
+    screen.blit(classifyText, classifyText.get_rect(center=classifyButton.center))
+
+    # Actions
     if mouse and resetButton.collidepoint(mouse):
         handwriting = [[0] * COLS for _ in range(ROWS)]
         classification = None
 
-    # Generate classification
     if mouse and classifyButton.collidepoint(mouse):
-        img = np.array(handwriting, dtype=np.float32).reshape(1, 20, 16, 1)
-        classification = model.predict(img).argmax()
+        img_ready = preprocess_canvas(handwriting)
+        prediction = model.predict(img_ready, verbose=0)
+        classification = int(np.argmax(prediction))
 
-
-    # Show classification if one exists
+    # Show classification
     if classification is not None:
-        
-        if int(classification)>=10:
-            plassification=let[classification]
-        else:
-            plassification=classification
-        classificationText = largeFont.render(str(plassification), True, WHITE)    
+        plassification = let.get(int(classification), "?")
+        classificationText = largeFont.render(str(plassification), True, WHITE)
         classificationRect = classificationText.get_rect()
         grid_size = OFFSET * 2 + CELL_SIZE * COLS
         classificationRect.center = (
             grid_size + ((width - grid_size) / 2),
-            100
+            120
         )
         screen.blit(classificationText, classificationRect)
 
